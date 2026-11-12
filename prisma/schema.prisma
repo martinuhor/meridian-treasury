@@ -1,0 +1,70 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  privyUserId   String    @unique
+  email         String    @unique
+  walletAddress String?   @unique
+  business      Business?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+}
+
+model Business {
+  id             String          @id @default(cuid())
+  userId         String          @unique
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  contactEmail   String
+  country        String          @default("Nigeria")
+  invoices       Invoice[]
+  yieldPositions YieldPosition[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+enum InvoiceStatus {
+  DRAFT
+  PENDING
+  PAID
+  OVERDUE
+  CANCELLED
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  invoiceNumber String        @unique
+  businessId    String
+  business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  clientName    String
+  clientEmail   String
+  currency      String        @default("USDC")
+  amount        Decimal       @db.Decimal(18, 6)
+  lineItems     Json
+  status        InvoiceStatus @default(PENDING)
+  dueDate       DateTime
+  paidAt        DateTime?
+  txHash        String?       @unique
+  payerAddress  String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model YieldPosition {
+  id                 String   @id @default(cuid())
+  businessId         String
+  business           Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  vaultAddress       String
+  vaultName          String   @default("US Treasury & Institutional USDC Vault")
+  depositedPrincipal Decimal  @db.Decimal(18, 6)
+  sharesHeld         Decimal  @db.Decimal(36, 18)
+  lastDepositTxHash  String?
+  updatedAt          DateTime @updatedAt
+}
