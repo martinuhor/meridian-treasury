@@ -4,9 +4,26 @@ export type DemoBootstrapResponse =
   | { ok: true; subject: string; email: string; profile: Profile }
   | { ok: false; error: string };
 
-/** Browser helper — prefers the HTTP bootstrap route over Server Actions. */
+/** Browser helper — challenge cookie then HTTP bootstrap (not Server Actions). */
 export async function bootstrapDemoSessionClient(): Promise<DemoBootstrapResponse> {
   try {
+    const challenge = await fetch("/api/demo/challenge", {
+      method: "GET",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+    if (!challenge.ok) {
+      const data = (await challenge.json().catch(() => null)) as {
+        error?: string;
+      } | null;
+      return {
+        ok: false,
+        error:
+          data?.error ??
+          `Demo challenge failed (${challenge.status}). Please try again.`,
+      };
+    }
+
     const res = await fetch("/api/demo/bootstrap", {
       method: "POST",
       credentials: "same-origin",

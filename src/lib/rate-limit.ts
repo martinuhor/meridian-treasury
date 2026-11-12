@@ -26,14 +26,38 @@ function prune(now: number) {
   }
 }
 
+type RateLimitResult = { ok: true } | { ok: false; retryAfterSec: number };
+
+function retryAfter(bucket: Bucket, now: number) {
+  return Math.max(1, Math.ceil((bucket.resetAt - now) / 1000));
+}
+
+/** Peek without consuming — use to reject early before expensive work. */
+export function rateLimitPeek(
+  key: string,
+  limit: number,
+  windowMs: number,
+): RateLimitResult {
+  const now = Date.now();
+  const map = buckets();
+  if (map.size > MAX_KEYS / 2) prune(now);
+  const current = map.get(key);
+  if (!current || current.resetAt <= now) return { ok: true };
+  if (current.count >= limit) {
+    return { ok: false, retryAfterSec: retryAfter(current, now) };
+  }
+  return { ok: true };
+}
+
 /**
  * Fixed-window rate limiter with eviction so keys cannot grow without bound.
+ * Consumes one unit on success.
  */
 export function rateLimit(
   key: string,
   limit: number,
   windowMs: number,
-): { ok: true } | { ok: false; retryAfterSec: number } {
+): RateLimitResult {
   const now = Date.now();
   const map = buckets();
   if (map.size > MAX_KEYS / 2) prune(now);
@@ -46,10 +70,7 @@ export function rateLimit(
   }
 
   if (current.count >= limit) {
-    return {
-      ok: false,
-      retryAfterSec: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
-    };
+    return { ok: false, retryAfterSec: retryAfter(current, now) };
   }
 
   current.count += 1;

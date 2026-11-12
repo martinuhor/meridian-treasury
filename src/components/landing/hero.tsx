@@ -30,7 +30,12 @@ export function LandingHero() {
     setBusy(true);
     try {
       persistDemoUser(createDemoUser());
-      // Warm the httpOnly demo cookie before navigating.
+      // Challenge + bootstrap so the httpOnly demo cookie is ready before nav.
+      await fetch("/api/demo/challenge", {
+        method: "GET",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      }).catch(() => null);
       await fetch("/api/demo/bootstrap", {
         method: "POST",
         credentials: "same-origin",

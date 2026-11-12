@@ -12,11 +12,51 @@ const PLACEHOLDER_SECRETS = new Set([
 ]);
 
 export const SESSION_COOKIE = "meridian_session";
+export const DEMO_CHALLENGE_COOKIE = "meridian_demo_challenge";
 
 function sessionSecret(): string | null {
   const primary = process.env.SESSION_SECRET || "";
   if (primary && !PLACEHOLDER_SECRETS.has(primary)) return primary;
   return null;
+}
+
+/** One-time challenge so anonymous POST /bootstrap cannot be scripted without a prior GET. */
+export function issueDemoChallenge(): string {
+  const secret = sessionSecret();
+  if (!secret) {
+    throw new Error(
+      "SESSION_SECRET must be set. Generate one with: openssl rand -hex 32",
+    );
+  }
+  const payload = {
+    nonce: randomBytes(16).toString("hex"),
+    exp: Date.now() + 5 * 60 * 1000,
+  };
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = createHmac("sha256", secret).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+
+export function verifyDemoChallenge(token: string | null | undefined): boolean {
+  if (!token || typeof token !== "string" || token.length > 512) return false;
+  const secret = sessionSecret();
+  if (!secret) return false;
+  const [body, sig] = token.split(".");
+  if (!body || !sig) return false;
+  const expected = createHmac("sha256", secret).update(body).digest("base64url");
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return false;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(body, "base64url").toString("utf8"),
+    ) as { nonce?: string; exp?: number };
+    if (!payload.nonce || !payload.exp) return false;
+    if (payload.exp < Date.now()) return false;
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function signSession(subject: string, email: string): string {
@@ -84,11 +124,12 @@ export type DemoBootstrapResult =
 
 /**
  * Pure demo bootstrap used by the HTTP route (preferred) and server actions.
- * Never touches Postgres.
+ * Never touches Postgres. New sessions require a one-time demo challenge cookie.
  */
 export function bootstrapDemoSession(options: {
   existingCookie?: string | null;
   fingerprint: string;
+  challengeToken?: string | null;
 }): DemoBootstrapResult {
   if (!sessionSecret()) {
     return {
@@ -114,11 +155,18 @@ export function bootstrapDemoSession(options: {
     }
   }
 
-  // Per-visitor cap plus a process-wide cap so fingerprint spoofing cannot
-  // flood the in-memory demo store without bound.
+  if (!verifyDemoChallenge(options.challengeToken)) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Demo challenge missing or expired. Refresh and try again.",
+    };
+  }
+
+  // Tight per-visitor + process-wide caps; challenge stops trivial POST scripts.
   const perVisitor = rateLimit(
     `demo-session:fp:${options.fingerprint}`,
-    5,
+    3,
     60 * 60 * 1000,
   );
   if (!perVisitor.ok) {
@@ -128,7 +176,7 @@ export function bootstrapDemoSession(options: {
       error: `Too many demo sessions. Retry in ${perVisitor.retryAfterSec}s.`,
     };
   }
-  const globalCap = rateLimit("demo-session:global", 40, 60 * 60 * 1000);
+  const globalCap = rateLimit("demo-session:global", 20, 60 * 60 * 1000);
   if (!globalCap.ok) {
     return {
       ok: false,

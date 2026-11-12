@@ -1,13 +1,10 @@
 "use server";
 
-import { createHash } from "crypto";
-import { headers } from "next/headers";
 import { z } from "zod";
 import {
   createSessionCookie,
   clearSessionCookie,
   getAuthSession,
-  newDemoSubject,
   requireAuthSession,
 } from "@/lib/auth/session";
 import { isDemoSubject } from "@/lib/auth/subjects";
@@ -30,17 +27,7 @@ const privySessionSchema = z.object({
   accessToken: z.string().min(10).max(8192),
 });
 
-async function demoFingerprintKey() {
-  const h = await headers();
-  const ua = h.get("user-agent") ?? "";
-  const al = h.get("accept-language") ?? "";
-  const fp = createHash("sha256")
-    .update(`${ua}\n${al}`)
-    .digest("hex")
-    .slice(0, 24);
-  return `demo-session:fp:${fp}`;
-}
-
+/** Refresh-only — new demo sessions must use GET challenge + POST /api/demo/bootstrap. */
 export async function startDemoSessionAction() {
   try {
     const existing = await getAuthSession();
@@ -51,31 +38,9 @@ export async function startDemoSessionAction() {
         email: existing.email,
       };
     }
-
-    // Per-visitor only — no shared global bucket one caller can exhaust for all.
-    const key = await demoFingerprintKey();
-    const limited = rateLimit(key, 8, 60 * 60 * 1000);
-    if (!limited.ok) {
-      return {
-        ok: false as const,
-        error: `Too many demo sessions. Retry in ${limited.retryAfterSec}s.`,
-      };
-    }
-
-    if (!process.env.SESSION_SECRET) {
-      return {
-        ok: false as const,
-        error: "SESSION_SECRET must be set. Generate one with: openssl rand -hex 32",
-      };
-    }
-
-    const subject = newDemoSubject();
-    const email = `${subject.slice(0, 18)}@demo.meridian.local`;
-    await createSessionCookie(subject, email);
     return {
-      ok: true as const,
-      subject,
-      email,
+      ok: false as const,
+      error: "Use Try demo on the landing page to start a demo session.",
     };
   } catch (error) {
     return {
@@ -89,27 +54,32 @@ export async function startDemoSessionAction() {
 }
 
 /**
- * Fallback server action — prefer POST /api/demo/bootstrap from the client.
+ * Fallback server action — prefers existing session; new sessions need challenge cookie.
  */
 export async function bootstrapDemoSessionAction() {
   try {
     const { cookies, headers: nextHeaders } = await import("next/headers");
-    const { bootstrapDemoSession, fingerprintFromHeaders } = await import(
-      "@/lib/demo-bootstrap"
-    );
+    const {
+      DEMO_CHALLENGE_COOKIE,
+      bootstrapDemoSession,
+      fingerprintFromHeaders,
+    } = await import("@/lib/demo-bootstrap");
     const h = await nextHeaders();
     const jar = await cookies();
     const existing = jar.get("meridian_session")?.value ?? null;
+    const challengeToken = jar.get(DEMO_CHALLENGE_COOKIE)?.value ?? null;
     const headerBag = new Headers();
     h.forEach((value, key) => headerBag.set(key, value));
     const result = bootstrapDemoSession({
       existingCookie: existing,
+      challengeToken,
       fingerprint: fingerprintFromHeaders(headerBag),
     });
     if (!result.ok) {
       return { ok: false as const, error: result.error };
     }
     await createSessionCookie(result.subject, result.email);
+    jar.delete(DEMO_CHALLENGE_COOKIE);
     return {
       ok: true as const,
       subject: result.subject,

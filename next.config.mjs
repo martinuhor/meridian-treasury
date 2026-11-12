@@ -12,6 +12,23 @@ const nextConfig = {
   reactStrictMode: true,
   transpilePackages: ["@privy-io/react-auth", "@privy-io/wagmi"],
   serverExternalPackages: ["@prisma/client", "prisma"],
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=()",
+          },
+        ],
+      },
+    ];
+  },
   webpack: (config) => {
     config.externals.push("pino-pretty", "encoding");
     config.resolve.fallback = {

@@ -9,7 +9,7 @@ import {
 import { verifyPaymentClaimToken } from "@/lib/payment-claim";
 import { verifyPaymentConfirmSignature } from "@/lib/payment-intent";
 import { verifyUsdcTransfer } from "@/lib/verify-payment";
-import { rateLimit } from "@/lib/rate-limit";
+import { rateLimit, rateLimitPeek } from "@/lib/rate-limit";
 import { visitorFingerprint } from "@/lib/request-ip";
 import { publicActionError } from "@/lib/safe-error";
 
@@ -18,6 +18,7 @@ export const runtime = "nodejs";
 type Params = { params: Promise<{ id: string }> };
 
 const MAX_BODY_BYTES = 1200;
+const WINDOW_MS = 60 * 60 * 1000;
 /** Prisma cuid / uuid-ish ids only — reject garbage before any side effects. */
 const INVOICE_ID_RE = /^[a-z0-9][a-z0-9_-]{7,63}$/i;
 
@@ -44,10 +45,23 @@ function publicConfirmInvoice(invoice: {
   };
 }
 
+function tooMany(message: string, retryAfterSec: number) {
+  return NextResponse.json(
+    { error: message },
+    {
+      status: 429,
+      headers: { "Retry-After": String(retryAfterSec) },
+    },
+  );
+}
+
 /**
  * Public payment confirmation.
  * Requires: claim token from the pay page, the paying wallet address, and an
  * EIP-191 signature over invoice+tx from that wallet — then on-chain verify.
+ *
+ * Invoice/payer RPC budgets are consumed only immediately before chain verify
+ * so cheap auth/idempotency failures cannot burn settlement capacity.
  */
 export async function POST(request: Request, { params }: Params) {
   const { id } = await params;
@@ -123,50 +137,21 @@ export async function POST(request: Request, { params }: Params) {
     );
   }
 
-  // Resolve invoice before creating any per-invoice rate-limit keys.
   const invoice = await getInvoiceById(id);
   if (!invoice) {
     return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
   }
 
-  // Throttle after authz. Keys are stable (invoice / payer / visitor) — never
-  // the claim token, which can be reissued and would bypass the bucket.
-  const byInvoice = rateLimit(`confirm:inv:${invoice.id}`, 12, 60 * 60 * 1000);
-  if (!byInvoice.ok) {
-    return NextResponse.json(
-      { error: "Too many confirmation attempts for this invoice." },
-      {
-        status: 429,
-        headers: { "Retry-After": String(byInvoice.retryAfterSec) },
-      },
-    );
-  }
-  const byPayer = rateLimit(
-    `confirm:payer:${body.payerAddress.toLowerCase()}`,
-    20,
-    60 * 60 * 1000,
-  );
-  if (!byPayer.ok) {
-    return NextResponse.json(
-      { error: "Too many confirmation attempts from this wallet." },
-      {
-        status: 429,
-        headers: { "Retry-After": String(byPayer.retryAfterSec) },
-      },
-    );
-  }
+  // Cheap spam gate only — does not consume invoice RPC budget.
   const byVisitor = rateLimit(
     `confirm:fp:${visitorFingerprint(request.headers)}`,
-    30,
-    60 * 60 * 1000,
+    40,
+    WINDOW_MS,
   );
   if (!byVisitor.ok) {
-    return NextResponse.json(
-      { error: "Too many confirmation attempts. Try again later." },
-      {
-        status: 429,
-        headers: { "Retry-After": String(byVisitor.retryAfterSec) },
-      },
+    return tooMany(
+      "Too many confirmation attempts. Try again later.",
+      byVisitor.retryAfterSec,
     );
   }
 
@@ -206,6 +191,41 @@ export async function POST(request: Request, { params }: Params) {
           "Business operating account is not configured for live settlement.",
       },
       { status: 400 },
+    );
+  }
+
+  const invoiceKey = `confirm:rpc:inv:${invoice.id}`;
+  const payerKey = `confirm:rpc:payer:${body.payerAddress.toLowerCase()}`;
+
+  // Peek first so we never consume then fail on the sibling bucket.
+  const invPeek = rateLimitPeek(invoiceKey, 12, WINDOW_MS);
+  if (!invPeek.ok) {
+    return tooMany(
+      "Too many confirmation attempts for this invoice.",
+      invPeek.retryAfterSec,
+    );
+  }
+  const payerPeek = rateLimitPeek(payerKey, 20, WINDOW_MS);
+  if (!payerPeek.ok) {
+    return tooMany(
+      "Too many confirmation attempts from this wallet.",
+      payerPeek.retryAfterSec,
+    );
+  }
+
+  // Consume RPC budget only for the expensive on-chain verify.
+  const byInvoice = rateLimit(invoiceKey, 12, WINDOW_MS);
+  if (!byInvoice.ok) {
+    return tooMany(
+      "Too many confirmation attempts for this invoice.",
+      byInvoice.retryAfterSec,
+    );
+  }
+  const byPayer = rateLimit(payerKey, 20, WINDOW_MS);
+  if (!byPayer.ok) {
+    return tooMany(
+      "Too many confirmation attempts from this wallet.",
+      byPayer.retryAfterSec,
     );
   }
 
