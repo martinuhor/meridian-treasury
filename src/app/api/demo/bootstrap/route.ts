@@ -12,8 +12,8 @@ export const runtime = "nodejs";
  * and returns a seeded in-memory profile. Avoids Server Action cookie/digest
  * failures on the hosted runtime.
  *
- * Throttling is per-visitor fingerprint inside bootstrapDemoSession — no
- * shared global bucket one caller can exhaust for everyone.
+ * Throttling is per-visitor fingerprint plus a process-wide demo cap inside
+ * bootstrapDemoSession.
  */
 export async function POST(request: Request) {
   const existingCookie = request.headers

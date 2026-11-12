@@ -60,10 +60,14 @@ export function verifySessionToken(
 }
 
 export function fingerprintFromHeaders(headers: Headers): string {
+  // Peer hint + UA + language — UA alone is trivial to rotate.
   const ua = headers.get("user-agent") ?? "";
   const al = headers.get("accept-language") ?? "";
+  const realIp = headers.get("x-real-ip")?.trim() ?? "";
+  const forwarded = headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "";
+  const peer = (realIp || forwarded).slice(0, 64);
   return createHash("sha256")
-    .update(`${ua}\n${al}`)
+    .update(`${peer}\n${ua}\n${al}`)
     .digest("hex")
     .slice(0, 24);
 }
@@ -110,16 +114,26 @@ export function bootstrapDemoSession(options: {
     }
   }
 
-  const limited = rateLimit(
+  // Per-visitor cap plus a process-wide cap so fingerprint spoofing cannot
+  // flood the in-memory demo store without bound.
+  const perVisitor = rateLimit(
     `demo-session:fp:${options.fingerprint}`,
-    8,
+    5,
     60 * 60 * 1000,
   );
-  if (!limited.ok) {
+  if (!perVisitor.ok) {
     return {
       ok: false,
       status: 429,
-      error: `Too many demo sessions. Retry in ${limited.retryAfterSec}s.`,
+      error: `Too many demo sessions. Retry in ${perVisitor.retryAfterSec}s.`,
+    };
+  }
+  const globalCap = rateLimit("demo-session:global", 40, 60 * 60 * 1000);
+  if (!globalCap.ok) {
+    return {
+      ok: false,
+      status: 429,
+      error: `Demo capacity reached. Retry in ${globalCap.retryAfterSec}s.`,
     };
   }
 

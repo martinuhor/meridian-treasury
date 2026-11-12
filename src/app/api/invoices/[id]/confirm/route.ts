@@ -1,4 +1,3 @@
-import { createHash } from "crypto";
 import { NextResponse } from "next/server";
 import type { Hex, Address } from "viem";
 import {
@@ -11,6 +10,7 @@ import { verifyPaymentClaimToken } from "@/lib/payment-claim";
 import { verifyPaymentConfirmSignature } from "@/lib/payment-intent";
 import { verifyUsdcTransfer } from "@/lib/verify-payment";
 import { rateLimit } from "@/lib/rate-limit";
+import { visitorFingerprint } from "@/lib/request-ip";
 import { publicActionError } from "@/lib/safe-error";
 
 export const runtime = "nodejs";
@@ -129,22 +129,43 @@ export async function POST(request: Request, { params }: Params) {
     return NextResponse.json({ error: "Invoice not found" }, { status: 404 });
   }
 
-  // Throttle only after authz checks, keyed by real invoice + claim digest.
-  const claimDigest = createHash("sha256")
-    .update(body.claimToken ?? "")
-    .digest("hex")
-    .slice(0, 16);
-  const byInvoice = rateLimit(
-    `confirm:inv:${invoice.id}:${claimDigest}`,
-    10,
-    60 * 60 * 1000,
-  );
+  // Throttle after authz. Keys are stable (invoice / payer / visitor) — never
+  // the claim token, which can be reissued and would bypass the bucket.
+  const byInvoice = rateLimit(`confirm:inv:${invoice.id}`, 12, 60 * 60 * 1000);
   if (!byInvoice.ok) {
     return NextResponse.json(
       { error: "Too many confirmation attempts for this invoice." },
       {
         status: 429,
         headers: { "Retry-After": String(byInvoice.retryAfterSec) },
+      },
+    );
+  }
+  const byPayer = rateLimit(
+    `confirm:payer:${body.payerAddress.toLowerCase()}`,
+    20,
+    60 * 60 * 1000,
+  );
+  if (!byPayer.ok) {
+    return NextResponse.json(
+      { error: "Too many confirmation attempts from this wallet." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(byPayer.retryAfterSec) },
+      },
+    );
+  }
+  const byVisitor = rateLimit(
+    `confirm:fp:${visitorFingerprint(request.headers)}`,
+    30,
+    60 * 60 * 1000,
+  );
+  if (!byVisitor.ok) {
+    return NextResponse.json(
+      { error: "Too many confirmation attempts. Try again later." },
+      {
+        status: 429,
+        headers: { "Retry-After": String(byVisitor.retryAfterSec) },
       },
     );
   }

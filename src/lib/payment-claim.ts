@@ -13,11 +13,18 @@ function claimSecret(): string | null {
   return secret;
 }
 
-/** Short-lived HMAC tying confirm requests to a specific invoice id. */
+/**
+ * Short-lived HMAC tying confirm requests to a specific invoice id.
+ * Expiry is bucketed to the hour so re-renders reuse the same token instead
+ * of minting a fresh one (and a fresh rate-limit key) on every page load.
+ */
 export function issuePaymentClaimToken(invoiceId: string): string | null {
   const secret = claimSecret();
   if (!secret) return null;
-  const exp = Date.now() + 1000 * 60 * 60 * 24; // 24h
+  const windowMs = 60 * 60 * 1000;
+  const bucket = Math.floor(Date.now() / windowMs);
+  // Valid through the end of this hour + 23 more hours (~24h).
+  const exp = (bucket + 24) * windowMs;
   const body = Buffer.from(JSON.stringify({ invoiceId, exp })).toString(
     "base64url",
   );

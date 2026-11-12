@@ -13,7 +13,7 @@ Non-custodial B2B USDC invoicing and treasury yield for emerging-market agencies
 - Invoice creator with public payment links at `/pay/[invoiceId]`
 - Wallet checkout (MetaMask / Coinbase / WalletConnect) with on-chain USDC verification
 - Treasury vault sweep + 5-year yield projector (85% / 15% fee split)
-- Local demo mode when `DEMO_MODE=true` (or no database in development)
+- Local demo mode when no database is configured (or explicit `DEMO_MODE=true`)
 
 ## Stack
 
@@ -49,7 +49,7 @@ npm run dev
 
 App defaults to [http://localhost:3456](http://localhost:3456).
 
-Without a database in development, or with `DEMO_MODE=true`, the app uses an in-memory demo store so you can explore the UI.
+Without a database in development the app uses an in-memory demo store. Set `DEMO_MODE=true` only when you intentionally want that store (never as a production default).
 
 ## Scripts
 
